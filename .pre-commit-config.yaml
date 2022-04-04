@@ -8,7 +8,7 @@ repos:
         exclude: .+\.patch
 
 -   repo: https://github.com/mgedmin/check-manifest
-    rev: "0.39"
+    rev: "0.48"
     hooks:
     -   id: check-manifest
 
