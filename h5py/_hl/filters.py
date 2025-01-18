@@ -41,6 +41,7 @@ from collections.abc import Mapping
 import operator
 
 import numpy as np
+from .base import product
 from .compat import filename_encode
 from .. import h5z, h5p, h5d, h5f
 
@@ -51,6 +52,10 @@ _COMP_FILTERS = {'gzip': h5z.FILTER_DEFLATE,
                 'shuffle': h5z.FILTER_SHUFFLE,
                 'fletcher32': h5z.FILTER_FLETCHER32,
                 'scaleoffset': h5z.FILTER_SCALEOFFSET }
+_FILL_TIME_ENUM = {'alloc': h5d.FILL_TIME_ALLOC,
+                   'never': h5d.FILL_TIME_NEVER,
+                   'ifset': h5d.FILL_TIME_IFSET,
+                   }
 
 DEFAULT_GZIP = 4
 DEFAULT_SZIP = ('nn', 8)
@@ -145,7 +150,7 @@ class Gzip(FilterRefBase):
 
 def fill_dcpl(plist, shape, dtype, chunks, compression, compression_opts,
               shuffle, fletcher32, maxshape, scaleoffset, external,
-              allow_unknown_filter=False):
+              allow_unknown_filter=False, *, fill_time=None):
     """ Generate a dataset creation property list.
 
     Undocumented and subject to change without warning.
@@ -244,9 +249,13 @@ def fill_dcpl(plist, shape, dtype, chunks, compression, compression_opts,
     external = _normalize_external(external)
     # End argument validation
 
-    if (chunks is True) or \
-    (chunks is None and any((shuffle, fletcher32, compression, maxshape,
-                             scaleoffset is not None))):
+    if (chunks is True) or (chunks is None and any((
+            shuffle,
+            fletcher32,
+            compression,
+            (maxshape and not len(external)),
+            scaleoffset is not None,
+    ))):
         chunks = guess_chunk(shape, maxshape, dtype.itemsize)
 
     if maxshape is True:
@@ -254,7 +263,14 @@ def fill_dcpl(plist, shape, dtype, chunks, compression, compression_opts,
 
     if chunks is not None:
         plist.set_chunk(chunks)
-        plist.set_fill_time(h5d.FILL_TIME_ALLOC)  # prevent resize glitch
+
+    if fill_time is not None:
+        if (ft := _FILL_TIME_ENUM.get(fill_time)) is not None:
+            plist.set_fill_time(ft)
+        else:
+            msg = ("fill_time must be one of the following choices: 'alloc', "
+                   f"'never' or 'ifset', but it is {fill_time}.")
+            raise ValueError(msg)
 
     # scale-offset must come before shuffle and compression
     if scaleoffset is not None:
@@ -358,7 +374,7 @@ def guess_chunk(shape, maxshape, typesize):
 
     # Determine the optimal chunk size in bytes using a PyTables expression.
     # This is kept as a float.
-    dset_size = np.product(chunks)*typesize
+    dset_size = product(chunks)*typesize
     target_size = CHUNK_BASE * (2**np.log10(dset_size/(1024.*1024)))
 
     if target_size > CHUNK_MAX:
@@ -373,14 +389,14 @@ def guess_chunk(shape, maxshape, typesize):
         # 1b. We're within 50% of the target chunk size, AND
         #  2. The chunk is smaller than the maximum chunk size
 
-        chunk_bytes = np.product(chunks)*typesize
+        chunk_bytes = product(chunks)*typesize
 
         if (chunk_bytes < target_size or \
          abs(chunk_bytes-target_size)/target_size < 0.5) and \
          chunk_bytes < CHUNK_MAX:
             break
 
-        if np.product(chunks) == 1:
+        if product(chunks) == 1:
             break  # Element size larger than CHUNK_MAX
 
         chunks[idx%ndims] = np.ceil(chunks[idx%ndims] / 2.0)

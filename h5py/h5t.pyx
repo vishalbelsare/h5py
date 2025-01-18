@@ -28,9 +28,9 @@ from .utils cimport  emalloc, efree, require_tuple, convert_dims,\
 
 # Python imports
 import codecs
+import platform
 import sys
 from collections import namedtuple
-import sys
 import numpy as np
 from .h5 import get_config
 
@@ -38,7 +38,10 @@ from ._objects import phil, with_phil
 
 cfg = get_config()
 
-DEF MACHINE = UNAME_MACHINE  # processor architecture, provided by Cython
+_UNAME_MACHINE = platform.uname()[4]
+_IS_PPC64 = _UNAME_MACHINE == "ppc64"
+_IS_PPC64LE = _UNAME_MACHINE == "ppc64le"
+
 cdef char* H5PY_PYTHON_OPAQUE_TAG = "PYTHON:OBJECT"
 
 # === Custom C API ============================================================
@@ -147,6 +150,31 @@ IEEE_F32LE = lockid(H5T_IEEE_F32LE)
 IEEE_F32BE = lockid(H5T_IEEE_F32BE)
 IEEE_F64LE = lockid(H5T_IEEE_F64LE)
 IEEE_F64BE = lockid(H5T_IEEE_F64BE)
+IF HDF5_VERSION < (1, 14, 4):
+    IEEE_F16BE = IEEE_F32BE.copy()
+    IEEE_F16BE.set_fields(15, 10, 5, 0, 10)
+    IEEE_F16BE.set_size(2)
+    IEEE_F16BE.set_ebias(15)
+    IEEE_F16BE.lock()
+
+    IEEE_F16LE = IEEE_F16BE.copy()
+    IEEE_F16LE.set_order(H5T_ORDER_LE)
+    IEEE_F16LE.lock()
+ELSE:
+    IEEE_F16BE = lockid(H5T_IEEE_F16BE)
+    IEEE_F16LE = lockid(H5T_IEEE_F16LE)
+
+# Quad floats
+IEEE_F128BE = IEEE_F64BE.copy()
+IEEE_F128BE.set_size(16)
+IEEE_F128BE.set_precision(128)
+IEEE_F128BE.set_fields(127, 112, 15, 0, 112)
+IEEE_F128BE.set_ebias(16383)
+IEEE_F128BE.lock()
+
+IEEE_F128LE = IEEE_F128BE.copy()
+IEEE_F128LE.set_order(H5T_ORDER_LE)
+IEEE_F128LE.lock()
 
 # Signed 2's complement integer types
 STD_I8LE  = lockid(H5T_STD_I8LE)
@@ -198,6 +226,20 @@ NATIVE_FLOAT = lockid(H5T_NATIVE_FLOAT)
 NATIVE_DOUBLE = lockid(H5T_NATIVE_DOUBLE)
 NATIVE_LDOUBLE = lockid(H5T_NATIVE_LDOUBLE)
 
+LDOUBLE_LE = NATIVE_LDOUBLE.copy()
+LDOUBLE_LE.set_order(H5T_ORDER_LE)
+LDOUBLE_LE.lock()
+
+LDOUBLE_BE = NATIVE_LDOUBLE.copy()
+LDOUBLE_BE.set_order(H5T_ORDER_BE)
+LDOUBLE_BE.lock()
+
+IF HDF5_VERSION > (1, 14, 3):
+    if H5T_NATIVE_FLOAT16 != H5I_INVALID_HID:
+        NATIVE_FLOAT16 = lockid(H5T_NATIVE_FLOAT16)
+    else:
+        NATIVE_FLOAT16 = H5I_INVALID_HID
+
 # Unix time types
 UNIX_D32LE = lockid(H5T_UNIX_D32LE)
 UNIX_D64LE = lockid(H5T_UNIX_D64LE)
@@ -216,37 +258,6 @@ VARIABLE = H5T_VARIABLE
 # Character sets
 CSET_ASCII = H5T_CSET_ASCII
 CSET_UTF8 = H5T_CSET_UTF8
-
-# Mini (or short) floats
-IEEE_F16BE = IEEE_F32BE.copy()
-IEEE_F16BE.set_fields(15, 10, 5, 0, 10)
-IEEE_F16BE.set_size(2)
-IEEE_F16BE.set_ebias(15)
-IEEE_F16BE.lock()
-
-IEEE_F16LE = IEEE_F16BE.copy()
-IEEE_F16LE.set_order(H5T_ORDER_LE)
-IEEE_F16LE.lock()
-
-# Quad floats
-IEEE_F128BE = IEEE_F64BE.copy()
-IEEE_F128BE.set_size(16)
-IEEE_F128BE.set_precision(128)
-IEEE_F128BE.set_fields(127, 112, 15, 0, 112)
-IEEE_F128BE.set_ebias(16383)
-IEEE_F128BE.lock()
-
-IEEE_F128LE = IEEE_F128BE.copy()
-IEEE_F128LE.set_order(H5T_ORDER_LE)
-IEEE_F128LE.lock()
-
-LDOUBLE_LE = NATIVE_LDOUBLE.copy()
-LDOUBLE_LE.set_order(H5T_ORDER_LE)
-LDOUBLE_LE.lock()
-
-LDOUBLE_BE = NATIVE_LDOUBLE.copy()
-LDOUBLE_BE.set_order(H5T_ORDER_BE)
-LDOUBLE_BE.lock()
 
 # Custom Python object pointer type
 cdef hid_t H5PY_OBJ = H5Tcreate(H5T_OPAQUE, sizeof(PyObject*))
@@ -283,12 +294,12 @@ cdef (int, int, int) _correct_float_info(ftype_, finfo):
     maxexp = finfo.maxexp
     minexp = finfo.minexp
     # workaround for numpy's buggy finfo on float128 on ppc64 archs
-    if ftype_ == np.longdouble and MACHINE == 'ppc64':
+    if ftype_ == np.longdouble and _IS_PPC64:
         # values reported by hdf5
         nmant = 116
         maxexp = 1024
         minexp = -1022
-    elif ftype_ == np.longdouble and MACHINE == 'ppc64le':
+    elif ftype_ == np.longdouble and _IS_PPC64LE:
         # values reported by hdf5
         nmant = 52
         maxexp = 1024
@@ -387,7 +398,7 @@ cdef class TypeID(ObjectID):
     """
         Base class for type identifiers (implements common operations)
 
-        * Hashable: If committed; in HDF5 1.8.X, also if locked
+        * Hashable: If committed or locked
         * Equality: Logical H5T comparison
     """
 
@@ -427,12 +438,12 @@ cdef class TypeID(ObjectID):
             return cpy
 
 
-    property dtype:
+    @property
+    def dtype(self):
         """ A Numpy-style dtype object representing this object.
         """
-        def __get__(self):
-            with phil:
-                return self.py_dtype()
+        with phil:
+            return self.py_dtype()
 
 
     cdef object py_dtype(self):
@@ -654,10 +665,7 @@ cdef class TypeOpaqueID(TypeID):
             tag = buf
             return tag
         finally:
-            IF HDF5_VERSION >= (1, 8, 13):
-                H5free_memory(buf)
-            ELSE:
-                free(buf)
+            H5free_memory(buf)
 
     cdef object py_dtype(self):
         cdef bytes tag = self.get_tag()
@@ -1118,10 +1126,7 @@ cdef class TypeCompositeID(TypeID):
             assert name != NULL
             pyname = <bytes>name
         finally:
-            IF HDF5_VERSION >= (1, 8, 13):
-                H5free_memory(name)
-            ELSE:
-                free(name)
+            H5free_memory(name)
 
         return pyname
 
@@ -1944,7 +1949,7 @@ def check_dtype(**kwds):
 
     vlen = dtype
         If the dtype represents an HDF5 vlen, returns the Python base class.
-        Currently only builting string vlens (str) are supported.  Returns
+        Currently only built-in string vlens (str) are supported.  Returns
         None if the dtype does not represent an HDF5 vlen.
 
     enum = dtype

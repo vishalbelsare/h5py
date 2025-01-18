@@ -36,7 +36,10 @@ COMPILER_SETTINGS = {
    'libraries'      : ['hdf5', 'hdf5_hl'],
    'include_dirs'   : [localpath('lzf')],
    'library_dirs'   : [],
-   'define_macros'  : [('H5_USE_18_API', None),
+   'define_macros'  : [('H5_USE_110_API', None),
+                       # The definition should imply the one below, but CI on
+                       # Ubuntu 20.04 still gets H5Rdereference1 for some reason
+                       ('H5Rdereference_vers', 2),
                        ('NPY_NO_DEPRECATED_API', 0),
                       ]
 }
@@ -126,8 +129,7 @@ class h5py_build_ext(build_ext):
         from Cython.Build import cythonize
         import numpy
 
-        complex256_support = hasattr(numpy, 'complex256') and \
-            os.environ.get('CIBW_ARCHS_MACOS') != 'arm64'
+        complex256_support = hasattr(numpy, 'complex256')
 
         # This allows ccache to recognise the files when pip builds in a temp
         # directory. It speeds up repeatedly running tests through tox with
@@ -140,14 +142,17 @@ class h5py_build_ext(build_ext):
         config = BuildConfig.from_env()
         config.summarise()
 
-        defs_file = localpath('h5py', 'defs.pyx')
-        func_file = localpath('h5py', 'api_functions.txt')
+        if config.hdf5_version < (1, 10, 6):
+            raise Exception(
+                f"This version of h5py requires HDF5 >= 1.10.6 (got version "
+                f"{config.hdf5_version} from environment variable or library)"
+            )
+
         config_file = localpath('h5py', 'config.pxi')
 
-        # Rebuild low-level defs if missing or stale
-        if not op.isfile(defs_file) or os.stat(func_file).st_mtime > os.stat(defs_file).st_mtime:
-            print("Executing api_gen rebuild of defs")
-            api_gen.run()
+        # Refresh low-level defs if missing or stale
+        print("Executing api_gen rebuild of defs")
+        api_gen.run()
 
         # Rewrite config.pxi file if needed
         s = f"""\
@@ -157,8 +162,6 @@ DEF MPI = {bool(config.mpi)}
 DEF ROS3 = {bool(config.ros3)}
 DEF HDF5_VERSION = {config.hdf5_version}
 DEF DIRECT_VFD = {bool(config.direct_vfd)}
-DEF SWMR_MIN_HDF5_VERSION = (1,9,178)
-DEF VDS_MIN_HDF5_VERSION = (1,9,233)
 DEF VOL_MIN_HDF5_VERSION = (1,11,5)
 DEF COMPLEX256_SUPPORT = {complex256_support}
 DEF NUMPY_BUILD_VERSION = '{numpy.__version__}'

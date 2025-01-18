@@ -89,7 +89,10 @@ class Group(HLObject, MutableMappingHDF5):
 
         maxshape
             (Tuple or int) Make the dataset resizable up to this shape. Use None for
-            axes you want to be unlimited. Integers can be used for 1D shape.
+            axes within the tuple you want to be unlimited. Integers can be used for 1D shape.
+            For 1D datasets with unlimited maxshape, a shape tuple of length 1 must be
+            provided, ``(None,)``. Passing ``None`` sets ``maxshape` to `shape`, making the
+            dataset un-resizable, which is the default.
         compression
             (String or int) Compression strategy.  Legal values are 'gzip',
             'szip', 'lzf'.  If an integer in range(10), this indicates gzip
@@ -405,7 +408,7 @@ class Group(HLObject, MutableMappingHDF5):
                 return default
 
             elif getclass and not getlink:
-                typecode = h5o.get_info(self.id, self._e(name)).type
+                typecode = h5o.get_info(self.id, self._e(name), lapl=self._lapl).type
 
                 try:
                     return {h5o.TYPE_GROUP: Group,
@@ -415,18 +418,18 @@ class Group(HLObject, MutableMappingHDF5):
                     raise TypeError("Unknown object type")
 
             elif getlink:
-                typecode = self.id.links.get_info(self._e(name)).type
+                typecode = self.id.links.get_info(self._e(name), lapl=self._lapl).type
 
                 if typecode == h5l.TYPE_SOFT:
                     if getclass:
                         return SoftLink
-                    linkbytes = self.id.links.get_val(self._e(name))
+                    linkbytes = self.id.links.get_val(self._e(name), lapl=self._lapl)
                     return SoftLink(self._d(linkbytes))
 
                 elif typecode == h5l.TYPE_EXTERNAL:
                     if getclass:
                         return ExternalLink
-                    filebytes, linkbytes = self.id.links.get_val(self._e(name))
+                    filebytes, linkbytes = self.id.links.get_val(self._e(name), lapl=self._lapl)
                     return ExternalLink(
                         filename_decode(filebytes), self._d(linkbytes)
                     )
@@ -508,6 +511,10 @@ class Group(HLObject, MutableMappingHDF5):
     @with_phil
     def __contains__(self, name):
         """ Test if a member name exists """
+        if hasattr(h5g, "_path_valid"):
+            if not self.id:
+                return False
+            return h5g._path_valid(self.id, self._e(name), self._lapl)
         return self._e(name) in self.id
 
     def copy(self, source, dest, name=None,
@@ -607,7 +614,10 @@ class Group(HLObject, MutableMappingHDF5):
                                lapl=self._lapl, lcpl=self._lcpl)
 
     def visit(self, func):
-        """ Recursively visit all names in this group and subgroups (HDF5 1.8).
+        """ Recursively visit all names in this group and subgroups.
+
+        Note: visit ignores soft and external links. To visit those, use
+        visit_links.
 
         You supply a callable (function, method or callable object); it
         will be called exactly once for each link in this group and every
@@ -633,7 +643,10 @@ class Group(HLObject, MutableMappingHDF5):
             return h5o.visit(self.id, proxy)
 
     def visititems(self, func):
-        """ Recursively visit names and objects in this group (HDF5 1.8).
+        """ Recursively visit names and objects in this group.
+
+        Note: visititems ignores soft and external links. To visit those, use
+        visititems_links.
 
         You supply a callable (function, method or callable object); it
         will be called exactly once for each link in this group and every
@@ -662,6 +675,65 @@ class Group(HLObject, MutableMappingHDF5):
                 name = self._d(name)
                 return func(name, self[name])
             return h5o.visit(self.id, proxy)
+
+    def visit_links(self, func):
+        """ Recursively visit all names in this group and subgroups.
+        Each link will be visited exactly once, regardless of its target.
+
+        You supply a callable (function, method or callable object); it
+        will be called exactly once for each link in this group and every
+        group below it. Your callable must conform to the signature:
+
+            func(<member name>) => <None or return value>
+
+        Returning None continues iteration, returning anything else stops
+        and immediately returns that value from the visit method.  No
+        particular order of iteration within groups is guaranteed.
+
+        Example:
+
+        >>> # List the entire contents of the file
+        >>> f = File("foo.hdf5")
+        >>> list_of_names = []
+        >>> f.visit_links(list_of_names.append)
+        """
+        with phil:
+            def proxy(name):
+                """ Call the function with the text name, not bytes """
+                return func(self._d(name))
+            return self.id.links.visit(proxy)
+
+    def visititems_links(self, func):
+        """ Recursively visit links in this group.
+        Each link will be visited exactly once, regardless of its target.
+
+        You supply a callable (function, method or callable object); it
+        will be called exactly once for each link in this group and every
+        group below it. Your callable must conform to the signature:
+
+            func(<member name>, <link>) => <None or return value>
+
+        Returning None continues iteration, returning anything else stops
+        and immediately returns that value from the visit method.  No
+        particular order of iteration within groups is guaranteed.
+
+        Example:
+
+        # Get a list of all softlinks in the file
+        >>> mylist = []
+        >>> def func(name, link):
+        ...     if isinstance(link, SoftLink):
+        ...         mylist.append(name)
+        ...
+        >>> f = File('foo.hdf5')
+        >>> f.visititems_links(func)
+        """
+        with phil:
+            def proxy(name):
+                """ Use the text name of the object, not bytes """
+                name = self._d(name)
+                return func(name, self.get(name, getlink=True))
+            return self.id.links.visit(proxy)
 
     @with_phil
     def __repr__(self):

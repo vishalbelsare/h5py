@@ -53,8 +53,9 @@ cdef herr_t attr_rw(hid_t attr, hid_t mtype, void *progbuf, int read) except -1:
             else:
                 need_bkg = needs_bkg_buffer(mtype, atype)
             if need_bkg:
-                back_buf = malloc(msize*npoints)
-                memcpy(back_buf, progbuf, msize*npoints)
+                back_buf = create_buffer(msize, asize, npoints)
+                if read:
+                    memcpy(back_buf, progbuf, msize*npoints)
 
             if read:
                 H5Aread(attr, atype, conv_buf)
@@ -134,7 +135,8 @@ cdef herr_t dset_rw(hid_t dset, hid_t mtype, hid_t mspace, hid_t fspace,
                 need_bkg = needs_bkg_buffer(mtype, dstype)
             if need_bkg:
                 back_buf = create_buffer(H5Tget_size(dstype), H5Tget_size(mtype), npoints)
-                h5py_copy(mtype, mspace, back_buf, progbuf, H5PY_GATHER)
+                if read:
+                    h5py_copy(mtype, mspace, back_buf, progbuf, H5PY_GATHER)
 
             if read:
                 H5Dread(dset, dstype, cspace, fspace, dxpl, conv_buf)
@@ -176,10 +178,7 @@ cdef hid_t make_reduced_type(hid_t mtype, hid_t dstype):
         try:
             mtype_fields.append(member_name)
         finally:
-            IF HDF5_VERSION >= (1, 8, 13):
-                H5free_memory(member_name)
-            ELSE:
-                free(member_name)
+            H5free_memory(member_name)
             member_name = NULL
 
     # First pass: add up the sizes of matching fields so we know how large a
@@ -194,10 +193,7 @@ cdef hid_t make_reduced_type(hid_t mtype, hid_t dstype):
             newtype_size += H5Tget_size(temptype)
             H5Tclose(temptype)
         finally:
-            IF HDF5_VERSION >= (1, 8, 13):
-                H5free_memory(member_name)
-            ELSE:
-                free(member_name)
+            H5free_memory(member_name)
             member_name = NULL
 
     newtype = H5Tcreate(H5T_COMPOUND, newtype_size)
@@ -214,10 +210,7 @@ cdef hid_t make_reduced_type(hid_t mtype, hid_t dstype):
             offset += H5Tget_size(temptype)
             H5Tclose(temptype)
         finally:
-            IF HDF5_VERSION >= (1, 8, 13):
-                H5free_memory(member_name)
-            ELSE:
-                free(member_name)
+            H5free_memory(member_name)
             member_name = NULL
 
     return newtype
@@ -248,7 +241,7 @@ ctypedef struct h5py_scatter_t:
     void* buf
 
 cdef herr_t h5py_scatter_cb(void* elem, hid_t type_id, unsigned ndim,
-                const hsize_t *point, void *operator_data) nogil except -1:
+                const hsize_t *point, void *operator_data) except -1 nogil:
     cdef h5py_scatter_t* info = <h5py_scatter_t*>operator_data
 
     memcpy(elem, (<char*>info[0].buf)+((info[0].i)*(info[0].elsize)),
@@ -259,7 +252,7 @@ cdef herr_t h5py_scatter_cb(void* elem, hid_t type_id, unsigned ndim,
     return 0
 
 cdef herr_t h5py_gather_cb(void* elem, hid_t type_id, unsigned ndim,
-                const hsize_t *point, void *operator_data) nogil except -1:
+                const hsize_t *point, void *operator_data) except -1 nogil:
     cdef h5py_scatter_t* info = <h5py_scatter_t*>operator_data
 
     memcpy((<char*>info[0].buf)+((info[0].i)*(info[0].elsize)), elem,

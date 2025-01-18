@@ -13,15 +13,14 @@
 
 import posixpath as pp
 import sys
-from warnings import warn
-
-from threading import local
 
 import numpy
 
 from .. import h5, h5s, h5t, h5r, h5d, h5p, h5fd, h5ds, _selector
-from ..h5py_warnings import H5pyDeprecationWarning
-from .base import HLObject, phil, with_phil, Empty, cached_property, find_item_type
+from .base import (
+    array_for_new_object, cached_property, Empty, find_item_type, HLObject,
+    phil, product, with_phil,
+)
 from . import filters
 from . import selections as sel
 from . import selections2 as sel2
@@ -39,13 +38,13 @@ def make_new_dset(parent, shape=None, dtype=None, data=None, name=None,
                   fillvalue=None, scaleoffset=None, track_times=False,
                   external=None, track_order=None, dcpl=None, dapl=None,
                   efile_prefix=None, virtual_prefix=None, allow_unknown_filter=False,
-                  rdcc_nslots=None, rdcc_nbytes=None, rdcc_w0=None):
+                  rdcc_nslots=None, rdcc_nbytes=None, rdcc_w0=None, *,
+                  fill_time=None):
     """ Return a new low-level dataset identifier """
 
     # Convert data to a C-contiguous ndarray
     if data is not None and not isinstance(data, Empty):
-        from . import base
-        data = base.array_for_new_object(data, specified_dtype=dtype)
+        data = array_for_new_object(data, specified_dtype=dtype)
 
     # Validate shape
     if shape is None:
@@ -56,7 +55,7 @@ def make_new_dset(parent, shape=None, dtype=None, data=None, name=None,
         shape = data.shape
     else:
         shape = (shape,) if isinstance(shape, int) else tuple(shape)
-        if data is not None and (numpy.product(shape, dtype=numpy.ulonglong) != numpy.product(data.shape, dtype=numpy.ulonglong)):
+        if data is not None and (product(shape) != product(data.shape)):
             raise ValueError("Shape tuple is incompatible with data")
 
     if isinstance(maxshape, int):
@@ -106,7 +105,8 @@ def make_new_dset(parent, shape=None, dtype=None, data=None, name=None,
     dcpl = filters.fill_dcpl(
         dcpl or h5p.create(h5p.DATASET_CREATE), shape, dtype,
         chunks, compression, compression_opts, shuffle, fletcher32,
-        maxshape, scaleoffset, external, allow_unknown_filter)
+        maxshape, scaleoffset, external, allow_unknown_filter,
+        fill_time=fill_time)
 
     if fillvalue is not None:
         # prepare string-type dtypes for fillvalue
@@ -208,26 +208,24 @@ class AstypeWrapper:
     def __getitem__(self, args):
         return self._dset.__getitem__(args, new_dtype=self._dtype)
 
-    def __enter__(self):
-        # pylint: disable=protected-access
-        warn(
-            "Using astype() as a context manager is deprecated. "
-            "Slice the returned object instead, like: ds.astype(np.int32)[:10]",
-            category=H5pyDeprecationWarning, stacklevel=2,
-        )
-        self._dset._local.astype = self._dtype
-        return self
-
-    def __exit__(self, *args):
-        # pylint: disable=protected-access
-        self._dset._local.astype = None
-
     def __len__(self):
         """ Get the length of the underlying dataset
 
         >>> length = len(dataset.astype('f8'))
         """
         return len(self._dset)
+
+    def __array__(self, dtype=None, copy=True):
+        if copy is False:
+            raise ValueError(
+                f"AstypeWrapper.__array__ received {copy=} "
+                f"but memory allocation cannot be avoided on read"
+            )
+
+        data = self[:]
+        if dtype is not None:
+            return data.astype(dtype, copy=False)
+        return data
 
 
 class AsStrWrapper:
@@ -261,6 +259,20 @@ class AsStrWrapper:
         """
         return len(self._dset)
 
+    def __array__(self, dtype=None, copy=True):
+        if dtype not in (None, object):
+            raise TypeError(
+                "AsStrWrapper.__array__ doesn't support the dtype argument"
+            )
+        if copy is False:
+            raise ValueError(
+                f"AsStrWrapper.__array__ received {copy=} "
+                f"but memory allocation cannot be avoided on read"
+            )
+        return numpy.array([
+            b.decode(self.encoding, self.errors) for b in self._dset
+        ], dtype=object).reshape(self._dset.shape)
+
 
 class FieldsWrapper:
     """Wrapper to extract named fields from a dataset with a struct dtype"""
@@ -273,11 +285,17 @@ class FieldsWrapper:
             names = [names]
         self.read_dtype = readtime_dtype(prior_dtype, names)
 
-    def __array__(self, dtype=None):
+    def __array__(self, dtype=None, copy=True):
+        if copy is False:
+            raise ValueError(
+                f"FieldsWrapper.__array__ received {copy=} "
+                f"but memory allocation cannot be avoided on read"
+            )
         data = self[:]
         if dtype is not None:
-            data = data.astype(dtype)
-        return data
+            return data.astype(dtype, copy=False)
+        else:
+            return data
 
     def __getitem__(self, args):
         data = self._dset.__getitem__(args, new_dtype=self.read_dtype)
@@ -339,10 +357,10 @@ class ChunkIterator:
         self._layout = dset.chunks
         if source_sel is None:
             # select over entire dataset
-            slices = []
-            for dim in range(rank):
-                slices.append(slice(0, self._shape[dim]))
-            self._sel = tuple(slices)
+            self._sel = tuple(
+                slice(0, self._shape[dim])
+                for dim in range(rank)
+            )
         else:
             if isinstance(source_sel, slice):
                 self._sel = (source_sel,)
@@ -393,7 +411,7 @@ class ChunkIterator:
 
             if dim > 0:
                 # reset to the start and continue iterating with higher dimension
-                self._chunk_index[dim] = 0
+                self._chunk_index[dim] = s.start // self._layout[dim]
             dim -= 1
         return tuple(slices)
 
@@ -494,7 +512,7 @@ class Dataset(HLObject):
         if self._is_empty:
             size = None
         else:
-            size = numpy.prod(self.shape, dtype=numpy.intp)
+            size = product(self.shape)
 
         # If the file is read-only, cache the size to speed-up future uses.
         # This cache is invalidated by .refresh() when using SWMR.
@@ -651,8 +669,6 @@ class Dataset(HLObject):
         self._filters = filters.get_filters(self._dcpl)
         self._readonly = readonly
         self._cache_props = {}
-        self._local = local()
-        self._local.astype = None
 
     def resize(self, size, axis=None):
         """ Resize the dataset, or the specified axis.
@@ -759,9 +775,6 @@ class Dataset(HLObject):
         * Boolean "mask" array indexing
         """
         args = args if isinstance(args, tuple) else (args,)
-
-        if new_dtype is None:
-            new_dtype = getattr(self._local, 'astype', None)
 
         if self._fast_read_ok and (new_dtype is None):
             try:
@@ -875,17 +888,18 @@ class Dataset(HLObject):
         if vlen is not None and vlen not in (bytes, str):
             try:
                 val = numpy.asarray(val, dtype=vlen)
-            except ValueError:
+            except (ValueError, TypeError):
                 try:
                     val = numpy.array([numpy.array(x, dtype=vlen)
                                        for x in val], dtype=self.dtype)
-                except ValueError:
+                except (ValueError, TypeError):
                     pass
             if vlen == val.dtype:
                 if val.ndim > 1:
                     tmp = numpy.empty(shape=val.shape[:-1], dtype=object)
                     tmp.ravel()[:] = [i for i in val.reshape(
-                        (numpy.product(val.shape[:-1], dtype=numpy.ulonglong), val.shape[-1]))]
+                        (product(val.shape[:-1]), val.shape[-1])
+                    )]
                 else:
                     tmp = numpy.array([None], dtype=object)
                     tmp[0] = val
@@ -994,8 +1008,7 @@ class Dataset(HLObject):
         if mshape == () and selection.array_shape != ():
             if self.dtype.subdtype is not None:
                 raise TypeError("Scalar broadcasting is not supported for array dtypes")
-            if self.chunks and (numpy.prod(self.chunks, dtype=numpy.float64) >=
-                                numpy.prod(selection.array_shape, dtype=numpy.float64)):
+            if self.chunks and (product(self.chunks) >= product(selection.array_shape)):
                 val2 = numpy.empty(selection.array_shape, dtype=val.dtype)
             else:
                 val2 = numpy.empty(selection.array_shape[-1], dtype=val.dtype)
@@ -1059,15 +1072,20 @@ class Dataset(HLObject):
                 self.id.write(mspace, fspace, source, dxpl=self._dxpl)
 
     @with_phil
-    def __array__(self, dtype=None):
+    def __array__(self, dtype=None, copy=True):
         """ Create a Numpy array containing the whole dataset.  DON'T THINK
         THIS MEANS DATASETS ARE INTERCHANGEABLE WITH ARRAYS.  For one thing,
         you have to read the whole dataset every time this method is called.
         """
+        if copy is False:
+            raise ValueError(
+                f"Dataset.__array__ received {copy=} "
+                f"but memory allocation cannot be avoided on read"
+            )
         arr = numpy.zeros(self.shape, dtype=self.dtype if dtype is None else dtype)
 
         # Special case for (0,)*-shape datasets
-        if numpy.product(self.shape, dtype=numpy.ulonglong) == 0:
+        if self.size == 0:
             return arr
 
         self.read_direct(arr)

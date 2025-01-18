@@ -20,12 +20,14 @@ from libc.string cimport strlen, strchr, strcpy, strncpy, strcmp,\
 ctypedef long size_t
 from libc.time cimport time_t
 
-from numpy cimport int8_t, uint8_t, int16_t, uint16_t, int32_t, uint32_t, int64_t, uint64_t
+from libc.stdint cimport int8_t, uint8_t, int16_t, uint16_t, int32_t, uint32_t, int64_t, uint64_t
 
-IF UNAME_SYSNAME != "Windows":
-    cdef extern from "unistd.h":
-        ctypedef long ssize_t
-ELSE:
+cdef extern from *:
+    """
+    #if !(defined(_WIN32) || defined(MS_WINDOWS) || defined(_MSC_VER))
+      #include <unistd.h>
+    #endif
+    """
     ctypedef long ssize_t
 
 # Can't use Cython defs because they keep moving them around

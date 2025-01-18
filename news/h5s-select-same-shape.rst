@@ -1,7 +1,7 @@
 New features
 ------------
 
-* `FieldsWrapper` now implements the `__array__()` method. This speeds up accessing fields with functions that expect an `__array__()` method, like `np.asarray()`.
+* <news item>
 
 Deprecations
 ------------
@@ -11,7 +11,7 @@ Deprecations
 Exposing HDF5 functions
 -----------------------
 
-* <news item>
+* ``H5Sselect_shape_same`` exposed as :meth:`.SpaceID.select_shape_same`.
 
 Bug fixes
 ---------

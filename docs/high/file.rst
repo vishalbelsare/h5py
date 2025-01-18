@@ -96,11 +96,11 @@ of supported drivers and their options:
           Raw data filename extension. Default is '-r.h5'.
 
     'ros3'
-        Allows read-only access to HDF5 files in AWS S3 or S3 compatible object
+        Enables read-only access to HDF5 files in the AWS S3 or S3-compatible object
         stores. HDF5 file name must be one of \http://, \https://, or s3://
         resource location. An s3:// location will be translated into an AWS
         `path-style <https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html#path-style-access>`_
-        location. Keywords:
+        location by h5py. Keywords:
 
         aws_region:
           AWS region of the S3 bucket with the file, e.g. ``b"us-east-1"``.
@@ -112,8 +112,19 @@ of supported drivers and their options:
         secret_key:
           AWS secret access key. Default is ``b''``.
 
-        The argument values must be ``bytes`` objects. All three arguments are
-        required to activate AWS authentication.
+        session_token:
+          AWS temporary session token. Default is ``b''``.' Must be used
+          together with temporary secret_id and secret_key. Available from HDF5 1.14.2.
+
+        The argument values must be ``bytes`` objects. Arguments aws_region,
+        secret_id, and secret_key are required to activate AWS authentication.
+
+        .. note::
+           Pre-built h5py packages on PyPI do not include ros3 driver support. If
+           you want this feature, you could use packages from conda-forge, or
+           :ref:`build h5py from source <source_install>` against an HDF5 build
+           with ros3. Alternatively, use the :ref:`file-like object
+           <file_fileobj>` support with a package like s3fs.
 
 
 .. _file_fileobj:
@@ -371,7 +382,7 @@ chunk cache*. They apply to all datasets unless specifically changed for each on
   approximately 100 times that number of chunks. The default value is 521.
 
 Chunks and caching are described in greater detail in the `HDF5 documentation
-<https://portal.hdfgroup.org/display/HDF5/Chunking+in+HDF5>`_.
+<https://support.hdfgroup.org/documentation/hdf5-docs/advanced_topics/chunking_in_hdf5.html>`_.
 
 .. _file_alignment:
 
@@ -381,7 +392,7 @@ Data alignment
 When creating datasets within files, it may be advantageous to align the offset
 within the file itself. This can help optimize read and write times if the data
 become aligned with the underlying hardware, or may help with parallelism with
-MPI. Unfortunately, aligning small variables to large blocks can leave alot of
+MPI. Unfortunately, aligning small variables to large blocks can leave a lot of
 empty space in a file. To this effect, application developers are left with two
 options to tune the alignment of data within their file.  The two variables
 ``alignment_threshold`` and ``alignment_interval``  in the :class:`File`
@@ -390,7 +401,7 @@ takes effect and the alignment in bytes within the file. The alignment is
 measured from the end of the user block.
 
 For more information, see the official HDF5 documentation `H5P_SET_ALIGNMENT
-<https://portal.hdfgroup.org/display/HDF5/H5P_SET_ALIGNMENT>`_.
+<https://support.hdfgroup.org/documentation/hdf5/latest/group___f_a_p_l.html#gab99d5af749aeb3896fd9e3ceb273677a>`_.
 
 .. _file_meta_block_size:
 
@@ -404,8 +415,8 @@ number of regions. Setting a small value can reduce the overall file size,
 especially in combination with the ``libver`` option. This controls how the
 overall data and metadata are laid out within the file.
 
-For more information, see the offical HDF5 documentation `H5P_SET_META_BLOCK_SIZE
-<https://portal.hdfgroup.org/display/HDF5/H5P_SET_META_BLOCK_SIZE>`_.
+For more information, see the official HDF5 documentation `H5P_SET_META_BLOCK_SIZE
+<https://support.hdfgroup.org/documentation/hdf5/latest/group___f_a_p_l.html#ga8822e3dedc8e1414f20871a87d533cb1>`_.
 
 Reference
 ---------
@@ -486,7 +497,7 @@ Reference
             Only available with HDF5 >= 1.12.1 or 1.10.x >= 1.10.7.
     :param alignment_threshold: Together with ``alignment_interval``, this
             property ensures that any file object greater than or equal
-            in size to the alignement threshold (in bytes) will be
+            in size to the alignment threshold (in bytes) will be
             aligned on an address which is a multiple of alignment interval.
     :param alignment_interval: This property should be used in conjunction with
             ``alignment_threshold``. See the description above. For more
@@ -550,4 +561,4 @@ Reference
     .. attribute:: meta_block_size
 
         Minimum size, in bytes, of metadata block allocations. Default: 2048.
-        See :ref`file_meta_block_size`.
+        See :ref:`file_meta_block_size`.
